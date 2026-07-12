@@ -35,7 +35,8 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install playwright
+          # Install specific older Playwright version compatible with Camoufox 0.4.11
+          pip install playwright==1.45.0
           python -m playwright install --with-deps firefox
 
       - name: Install Camoufox
