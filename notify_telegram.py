@@ -1,75 +1,66 @@
+#!/usr/bin/env python3
+"""Send signup result to Telegram"""
 import sys
 import json
-import argparse
 import urllib.request
 import urllib.parse
 
-def send_telegram_message(token, chat_id, text):
+def send_telegram(token, chat_id, text):
     url = f"https://api.telegram.org/bot{token}/sendMessage"
-    payload = {
-        "chat_id": chat_id,
-        "text": text,
-        "parse_mode": "Markdown"
-    }
-    req = urllib.request.Request(
-        url,
-        data=json.dumps(payload).encode('utf-8'),
-        headers={'Content-Type': 'application/json'}
-    )
+    data = urllib.parse.urlencode({"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}).encode()
+    req = urllib.request.Request(url, data=data, method="POST")
     try:
-        with urllib.request.urlopen(req, timeout=10) as r:
-            return json.loads(r.read().decode('utf-8'))
+        urllib.request.urlopen(req, timeout=15)
     except Exception as e:
-        print(f"Error sending Telegram notification: {e}")
-        return None
+        print(f"Telegram send error: {e}")
 
 def main():
+    import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("--chat-id", required=True)
     parser.add_argument("--bot-token", required=True)
-    parser.add_argument("--output-file", required=True)
+    parser.add_argument("--output-file", default="output.log")
     args = parser.parse_args()
 
-    # Read output content
+    # Read output log
     try:
-        with open(args.output_file, 'r', encoding='utf-8') as f:
-            content = f.read()
-    except Exception as e:
-        send_telegram_message(
-            args.bot_token,
-            args.chat_id,
-            f"❌ **Error membaca output dari Runner:** {e}"
-        )
+        if args.output_file == "/dev/stdin":
+            lines = sys.stdin.read()
+        else:
+            with open(args.output_file, 'r') as f:
+                lines = f.read()
+    except:
+        send_telegram(args.bot_token, args.chat_id, "❌ Error reading output file")
         return
 
-    # Find the last JSON line
+    # Find last JSON line with status
     result = None
-    lines = content.strip().split('\n')
-    for line in reversed(lines):
-        try:
-            parsed = json.loads(line)
-            if "status" in parsed:
-                result = parsed
+    for line in reversed(lines.strip().split('\n')):
+        line = line.strip()
+        if line.startswith('{') and '"status"' in line:
+            try:
+                result = json.loads(line)
                 break
-        except Exception:
-            continue
+            except:
+                continue
 
-    if result:
-        status = result.get("status")
-        if status == "success":
-            msg = (
-                f"✅ **Cloudflare Auto-Signup Berhasil!**\n\n"
-                f"📧 **Email:** `{result.get('email')}`\n"
-                f"🆔 **Account ID:** `{result.get('account_id')}`\n"
-                f"🔑 **Workers AI API Token:**\n`{result.get('api_key')}`"
-            )
-        else:
-            msg = f"❌ **Gagal melakukan Signup Cloudflare!**\n\n⚠️ **Error:** `{result.get('error', 'Unknown Error')}`"
+    if not result:
+        send_telegram(args.bot_token, args.chat_id, "❌ Signup selesai tapi tidak ada output status ditemukan.")
+        return
+
+    if result.get("status") == "success":
+        msg = (
+            f"✅ *Signup Berhasil!*\n\n"
+            f"📧 *Email:* `{result.get('email', 'N/A')}`\n"
+            f"🔑 *Password:* `{result.get('password', 'N/A')}`\n"
+            f"🆔 *Account ID:* `{result.get('account_id', 'N/A')}`\n"
+            f"🔐 *API Token:* `{result.get('api_token', 'N/A')[:30]}...`\n\n"
+            f"_Token Workers AI siap digunakan!_"
+        )
     else:
-        # Fallback to output logs if JSON not found
-        msg = f"❌ **Runner selesai dengan output tidak terstruktur:**\n\n```\n{content[-3000:]}\n```"
+        msg = f"❌ *Signup Gagal*\n\nError: `{result.get('error', 'Unknown error')}`"
 
-    send_telegram_message(args.bot_token, args.chat_id, msg)
+    send_telegram(args.bot_token, args.chat_id, msg)
 
 if __name__ == "__main__":
     main()

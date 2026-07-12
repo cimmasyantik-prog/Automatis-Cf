@@ -1,22 +1,15 @@
-name: Cloudflare Auto-Signup (Camoufox)
+name: Cloudflare Auto-Signup
 
 on:
   workflow_dispatch:
     inputs:
       email:
-        description: 'Email for signup (Ammail format)'
+        description: 'Email for Cloudflare signup'
         required: true
       password:
-        description: 'Password for Cloudflare account'
-        required: true
-      ammail_base_url:
-        description: 'Ammail Base URL API'
-        required: true
-        default: 'https://ammail.klipers.site'
-      ammail_domain:
-        description: 'Ammail Domain for temp inbox'
-        required: true
-        default: 'amstream.pro'
+        description: 'Password (leave empty to auto-generate)'
+        required: false
+        default: ''
       telegram_chat_id:
         description: 'Telegram Chat ID to notify result'
         required: true
@@ -35,36 +28,21 @@ jobs:
 
       - name: Install dependencies
         run: |
-          # Install specific older Playwright version compatible with Camoufox 0.4.11
-          pip install playwright==1.45.0
-          python -m playwright install --with-deps firefox
+          pip install patchright
+          python -m patchright install chromium
 
-      - name: Install Camoufox
-        run: |
-          pip install camoufox
-          python -m camoufox fetch
-
-      - name: Run Cloudflare Signup Script
+      - name: Run Cloudflare Signup
         env:
-          TWOCAPTCHA_API_KEY: ${{ secrets.TWOCAPTCHA_API_KEY }}
-          AMMAIL_API_KEY: ${{ secrets.AMMAIL_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
         run: |
-          # Jalankan xvfb agar Camoufox virtual display bisa berjalan
-          sudo apt-get update && sudo apt-get install -y xvfb
-          
-          # Jalankan dengan xvfb-run dan flag --headless agar Camoufox jalan di GUI virtual
-          xvfb-run --server-args="-screen 0 1280x1024x24" python cloudflare_signup.py \
+          python signup.py \
             --email "${{ github.event.inputs.email }}" \
             --password "${{ github.event.inputs.password }}" \
-            --ammail-base-url "${{ github.event.inputs.ammail_base_url }}" \
-            --ammail-api-key "$AMMAIL_API_KEY" \
-            --ammail-domain "${{ github.event.inputs.ammail_domain }}" \
-            --2captcha-key "$TWOCAPTCHA_API_KEY" > output.json 2>&1 || true
-          
-          cat output.json
-          
-          # Kirim hasil ke Telegram
+            --headless \
+            --telegram-chat-id "${{ github.event.inputs.telegram_chat_id }}" 2>&1 | tee output.log
+
+          # Send result to Telegram
           python notify_telegram.py \
             --chat-id "${{ github.event.inputs.telegram_chat_id }}" \
-            --bot-token "${{ secrets.TELEGRAM_BOT_TOKEN }}" \
-            --output-file output.json
+            --bot-token "$TELEGRAM_BOT_TOKEN" \
+            --output-file /dev/stdin <<< "$(grep '"status"' output.log | tail -1)"
