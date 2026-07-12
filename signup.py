@@ -137,30 +137,42 @@ def wait_for_cloudflare_challenge(page, timeout=90):
     print(json.dumps({"step": f"CF challenge timeout ({timeout}s)"}), flush=True)
     return False
 
-def solve_turnstile_drission(page, timeout=30):
-    """Try to find and click Turnstile checkbox using DrissionPage's shadow DOM selector"""
+def solve_turnstile_drission(page, timeout=45):
+    """Bypasses Cloudflare Turnstile using DrissionPage's iframe navigation"""
     print(json.dumps({"step": "Mencari Turnstile checkbox..."}), flush=True)
     deadline = time.time() + timeout
     while time.time() < deadline:
         try:
-            # DrissionPage can easily find iframes
-            iframes = page.eles('tag:iframe')
-            for iframe in iframes:
-                src = iframe.attr('src') or ''
-                if 'challenges.cloudflare.com' in src:
-                    # Access iframe inner element (DrissionPage handles cross-origin iframes gracefully in many cases)
-                    # Try clicking the checkbox directly
-                    chk = iframe.ele('tag:input@type=checkbox', timeout=2)
-                    if chk:
-                        chk.click()
-                        print(json.dumps({"step": "Turnstile checkbox di-click!"}), flush=True)
-                        time.sleep(3)
+            # 1. Find the CF challenge iframe
+            iframe = None
+            for ifr in page.eles('tag:iframe'):
+                src = ifr.attr('src') or ''
+                if 'challenges.cloudflare.com' in src or 'cdn-cgi/challenge-platform' in src:
+                    iframe = ifr
+                    break
+
+            if iframe:
+                # 2. Look for the checkbox element inside the iframe
+                # DrissionPage can query elements inside iframes directly
+                checkbox = iframe.ele('.mark', timeout=2) or iframe.ele('.cb-i', timeout=1) or iframe.ele('@type=checkbox', timeout=1)
+                if checkbox:
+                    print(json.dumps({"step": "Checkbox Turnstile ditemukan! Mengklik..."}), flush=True)
+                    checkbox.click()
+                    time.sleep(3)
+                    # Verify if solved (check if token is generated)
+                    token = page.ele('@name=cf-turnstile-response', timeout=2) or page.ele('@name=cf_challenge_response', timeout=2)
+                    if token and token.value:
+                        print(json.dumps({"step": "Turnstile berhasil di-solve!"}), flush=True)
                         return True
-                    else:
-                        # Fallback click on body center
-                        iframe.click()
-                        print(json.dumps({"step": "Iframe di-click (fallback)..."}), flush=True)
-                        time.sleep(3)
+                else:
+                    # Try clicking the center of the iframe
+                    print(json.dumps({"step": "Checkbox tidak langsung terlihat, mengklik center iframe..."}), flush=True)
+                    iframe.click()
+                    time.sleep(3)
+                    
+                    token = page.ele('@name=cf-turnstile-response', timeout=2)
+                    if token and token.value:
+                        print(json.dumps({"step": "Turnstile berhasil di-solve via iframe click!"}), flush=True)
                         return True
         except Exception as e:
             pass
@@ -198,8 +210,9 @@ def main():
     from DrissionPage import ChromiumPage, ChromiumOptions
 
     co = ChromiumOptions()
-    if args.headless:
-        co.headless(True)
+    # DO NOT set headless(True). Instead, run in headed mode inside Xvfb (virtual frame buffer)
+    # This prevents Cloudflare from detecting the headless flag and blocking us.
+    co.headless(False)
     # Anti-detect arguments
     co.set_argument('--no-sandbox')
     co.set_argument('--disable-gpu')
