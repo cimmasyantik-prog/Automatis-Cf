@@ -266,8 +266,8 @@ def main():
     parser.add_argument("--telegram-chat-id", default="", help="Telegram chat ID")
     args = parser.parse_args()
 
-    email = args.email or random_email()
-    password = args.password or random_password()
+    email = random_email() if not args.email or args.email == "auto-gen" else args.email
+    password = random_password() if not args.password or args.password == "auto-gen" else args.password
     mail_password = f"Mail_{random.randint(100000,999999)}"
 
     print(json.dumps({"step": "Memulai Cloudflare Auto-Signup", "email": email}), flush=True)
@@ -337,6 +337,51 @@ def main():
                 turnstile_token = solve_turnstile_isolated(browser, page.url, known_sk)
                 if turnstile_token:
                     break
+
+        # Fallback: try clicking the actual Turnstile iframe checkbox on the page
+        if not turnstile_token:
+            print(json.dumps({"step": "Coba solve Turnstile via iframe click di halaman..."}), flush=True)
+            for attempt in range(10):
+                try:
+                    # Find Turnstile iframe
+                    iframes = page.frames
+                    for frame in iframes:
+                        if "challenges.cloudflare.com" in (frame.url or ""):
+                            # Try clicking the checkbox in the iframe
+                            try:
+                                checkbox = frame.query_selector('input[type="checkbox"]')
+                                if checkbox:
+                                    checkbox.click()
+                                    print(json.dumps({"step": f"Clicked checkbox in iframe (attempt {attempt+1})"}), flush=True)
+                                else:
+                                    # Click the body of the iframe
+                                    frame.click("body")
+                            except Exception as e:
+                                pass
+                except:
+                    pass
+
+                time.sleep(3)
+
+                # Check for token in page
+                try:
+                    token_val = page.evaluate("""() => {
+                        const names = ['cf-turnstile-response', 'cf_challenge_response'];
+                        for (const n of names) {
+                            const el = document.querySelector(`[name="${n}"]`);
+                            if (el && el.value && el.value.length > 10) return el.value;
+                        }
+                        return null;
+                    }""")
+                    if token_val:
+                        turnstile_token = token_val
+                        print(json.dumps({"step": f"Turnstile solved via iframe click! ({(attempt+1)*3}s)"}), flush=True)
+                        break
+                except:
+                    pass
+
+                if attempt < 5:
+                    print(json.dumps({"step": f"Turnstile iframe clicking... ({(attempt+1)*3}s)"}), flush=True)
 
         if turnstile_token:
             inject_turnstile_token(page, turnstile_token)
