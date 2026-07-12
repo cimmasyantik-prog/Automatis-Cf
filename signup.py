@@ -137,6 +137,45 @@ def wait_for_cloudflare_challenge(page, timeout=90):
     print(json.dumps({"step": f"CF challenge timeout ({timeout}s)"}), flush=True)
     return False
 
+def find_turnstile_iframe(page):
+    """Finds Turnstile iframe by searching known wrappers, shadow roots, and fallbacks"""
+    # Method 1: Check known wrappers
+    for wrapper_selector in ['cf-turnstile-wrapper', '.cf-turnstile', '.cf-challenge', '#turnstile-wrapper']:
+        try:
+            wrapper = page.ele(wrapper_selector, timeout=1)
+            if wrapper and wrapper.shadow_root:
+                iframe = wrapper.shadow_root.ele('tag:iframe', timeout=1)
+                if iframe:
+                    print(json.dumps({"step": f"Turnstile iframe ditemukan di shadow_root dari {wrapper_selector}"}), flush=True)
+                    return iframe
+        except Exception as e:
+            pass
+
+    # Method 2: Iterate all elements and check shadow roots
+    try:
+        for ele in page.eles('css:*'):
+            try:
+                if ele.shadow_root:
+                    iframe = ele.shadow_root.ele('tag:iframe', timeout=1)
+                    if iframe:
+                        print(json.dumps({"step": f"Turnstile iframe ditemukan di shadow_root dari element: {ele.tag}"}), flush=True)
+                        return iframe
+            except:
+                pass
+    except Exception as e:
+        pass
+
+    # Method 3: Standard iframe lookup (fallback)
+    try:
+        iframe = page.ele('tag:iframe@src*=challenges.cloudflare.com', timeout=1) or page.ele('tag:iframe@src*=/cdn-cgi/challenge-platform/', timeout=1)
+        if iframe:
+            print(json.dumps({"step": "Turnstile iframe ditemukan via standard selector"}), flush=True)
+            return iframe
+    except:
+        pass
+
+    return None
+
 def solve_turnstile_drission(page, timeout=45):
     """Bypasses Cloudflare Turnstile using DrissionPage's iframe navigation"""
     print(json.dumps({"step": "Mencari Turnstile checkbox..."}), flush=True)
@@ -144,22 +183,20 @@ def solve_turnstile_drission(page, timeout=45):
     # Debug: print all iframes on the page
     try:
         iframes = page.eles('tag:iframe')
-        print(json.dumps({"step": f"Ditemukan {len(iframes)} iframe di halaman"}), flush=True)
-        for i, ifr in enumerate(iframes):
-            print(json.dumps({"step": f"Iframe {i} HTML: {ifr.html}"}), flush=True)
+        print(json.dumps({"step": f"Ditemukan {len(iframes)} standard iframe di halaman"}), flush=True)
     except Exception as e:
         print(json.dumps({"step": f"Gagal list debug iframes: {str(e)}"}), flush=True)
 
     deadline = time.time() + timeout
     while time.time() < deadline:
         try:
-            # 1. Find the iframe element first
-            iframe_ele = page.ele('tag:iframe@src*=challenges.cloudflare.com') or page.ele('tag:iframe@src*=/cdn-cgi/challenge-platform/')
+            # 1. Find the iframe element
+            iframe_ele = find_turnstile_iframe(page)
             if iframe_ele:
                 # 2. Get the ChromiumFrame object using get_frame()
                 frame = page.get_frame(iframe_ele)
                 if frame:
-                    print(json.dumps({"step": "Iframe Turnstile ditemukan! Mencari checkbox..."}), flush=True)
+                    print(json.dumps({"step": "Iframe Turnstile terhubung! Mencari checkbox..."}), flush=True)
                     # Check for the checkbox inside the frame
                     checkbox = frame.ele('.mark', timeout=2) or frame.ele('.cb-i', timeout=1) or frame.ele('@type=checkbox', timeout=1) or frame.ele('#cf-stage', timeout=1)
                     if checkbox:
