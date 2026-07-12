@@ -1,4 +1,4 @@
-name: Cloudflare Auto-Signup
+name: Cloudflare Auto-Signup (Camoufox + Turnstile Solver)
 
 on:
   workflow_dispatch:
@@ -28,14 +28,15 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install patchright
-          python -m patchright install chromium
+          pip install playwright==1.45.0 camoufox
+          python -m playwright install --with-deps firefox
+          python -m camoufox fetch
 
       - name: Run Cloudflare Signup
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
         run: |
-          python signup.py \
+          xvfb-run --server-args="-screen 0 1920x1080x24" python signup.py \
             --email "${{ github.event.inputs.email }}" \
             --password "${{ github.event.inputs.password }}" \
             --headless \
