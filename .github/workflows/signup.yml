@@ -48,8 +48,11 @@ jobs:
           TWOCAPTCHA_API_KEY: ${{ secrets.TWOCAPTCHA_API_KEY }}
           AMMAIL_API_KEY: ${{ secrets.AMMAIL_API_KEY }}
         run: |
-          # Jalankan python cloudflare_signup.py dengan argumen yang benar
-          python cloudflare_signup.py \
+          # Jalankan xvfb agar Camoufox virtual display bisa berjalan
+          sudo apt-get update && sudo apt-get install -y xvfb
+          
+          # Jalankan dengan xvfb-run dan flag --headless agar Camoufox jalan di GUI virtual
+          xvfb-run --server-args="-screen 0 1280x1024x24" python cloudflare_signup.py \
             --email "${{ github.event.inputs.email }}" \
             --password "${{ github.event.inputs.password }}" \
             --ammail-base-url "${{ github.event.inputs.ammail_base_url }}" \
