@@ -143,31 +143,36 @@ def solve_turnstile_drission(page, timeout=45):
     deadline = time.time() + timeout
     while time.time() < deadline:
         try:
-            # Get the ChromiumFrame directly using get_frame()
-            frame = page.get_frame('@src*=challenges.cloudflare.com') or page.get_frame('@src*=/cdn-cgi/challenge-platform/')
-            if frame:
-                print(json.dumps({"step": "Iframe Turnstile ditemukan! Mencari checkbox..."}), flush=True)
-                # Check for the checkbox inside the frame
-                checkbox = frame.ele('.mark', timeout=2) or frame.ele('.cb-i', timeout=1) or frame.ele('@type=checkbox', timeout=1) or frame.ele('#cf-stage', timeout=1)
-                if checkbox:
-                    print(json.dumps({"step": "Checkbox Turnstile ditemukan! Mengklik..."}), flush=True)
-                    checkbox.click()
-                    time.sleep(3)
-                    # Verify if solved (check if token is generated)
-                    token = page.ele('@name=cf-turnstile-response', timeout=2) or page.ele('@name=cf_challenge_response', timeout=2)
-                    if token and token.value:
-                        print(json.dumps({"step": "Turnstile berhasil di-solve!"}), flush=True)
-                        return True
+            # 1. Find the iframe element first
+            iframe_ele = page.ele('tag:iframe@src*=challenges.cloudflare.com') or page.ele('tag:iframe@src*=/cdn-cgi/challenge-platform/')
+            if iframe_ele:
+                # 2. Get the ChromiumFrame object using get_frame()
+                frame = page.get_frame(iframe_ele)
+                if frame:
+                    print(json.dumps({"step": "Iframe Turnstile ditemukan! Mencari checkbox..."}), flush=True)
+                    # Check for the checkbox inside the frame
+                    checkbox = frame.ele('.mark', timeout=2) or frame.ele('.cb-i', timeout=1) or frame.ele('@type=checkbox', timeout=1) or frame.ele('#cf-stage', timeout=1)
+                    if checkbox:
+                        print(json.dumps({"step": "Checkbox Turnstile ditemukan! Mengklik..."}), flush=True)
+                        checkbox.click()
+                        time.sleep(3)
+                        # Verify if solved (check if token is generated)
+                        token = page.ele('@name=cf-turnstile-response', timeout=2) or page.ele('@name=cf_challenge_response', timeout=2)
+                        if token and token.value:
+                            print(json.dumps({"step": "Turnstile berhasil di-solve!"}), flush=True)
+                            return True
+                    else:
+                        # Try clicking the center of the frame
+                        print(json.dumps({"step": "Checkbox tidak langsung terlihat, mengklik center iframe..."}), flush=True)
+                        frame.click()
+                        time.sleep(3)
+                        
+                        token = page.ele('@name=cf-turnstile-response', timeout=2)
+                        if token and token.value:
+                            print(json.dumps({"step": "Turnstile berhasil di-solve via iframe click!"}), flush=True)
+                            return True
                 else:
-                    # Try clicking the center of the frame
-                    print(json.dumps({"step": "Checkbox tidak langsung terlihat, mengklik center iframe..."}), flush=True)
-                    frame.click()
-                    time.sleep(3)
-                    
-                    token = page.ele('@name=cf-turnstile-response', timeout=2)
-                    if token and token.value:
-                        print(json.dumps({"step": "Turnstile berhasil di-solve via iframe click!"}), flush=True)
-                        return True
+                    print(json.dumps({"step": "Gagal mendapatkan ChromiumFrame dari iframe element..."}), flush=True)
             else:
                 print(json.dumps({"step": "Iframe Turnstile belum muncul..."}), flush=True)
         except Exception as e:
