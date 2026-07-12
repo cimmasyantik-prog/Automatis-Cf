@@ -28,13 +28,14 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install playwright==1.45.0 camoufox
+          pip install -r requirements.txt
           python -m playwright install --with-deps firefox
           python -m camoufox fetch
 
       - name: Run Cloudflare Signup
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TWOCAPTCHA_API_KEY: ${{ secrets.TWOCAPTCHA_API_KEY }}
         run: |
           xvfb-run --server-args="-screen 0 1920x1080x24" python signup.py \
             --email "${{ github.event.inputs.email }}" \

@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """
 Cloudflare Workers AI Auto-Signup
-Camoufox (anti-detect Firefox) + isolated Turnstile solver + mail.tm
-No 2Captcha needed — Turnstile solved via isolated page approach from Theyka.
+Camoufox (anti-detect Firefox) + 2Captcha Turnstile + mail.tm
 """
 
 import sys
@@ -11,6 +10,7 @@ import time
 import json
 import random
 import string
+import os
 import urllib.request
 import urllib.parse
 from typing import Optional
@@ -157,6 +157,24 @@ def extract_sitekey(page) -> Optional[str]:
     return None
 
 
+def solve_turnstile_2captcha(sitekey: str, page_url: str, api_key: str) -> Optional[str]:
+    """Solve Turnstile using 2Captcha API (paid, reliable)"""
+    print(json.dumps({"step": f"Solve Turnstile via 2Captcha (sitekey={sitekey[:25]}...)"}), flush=True)
+    try:
+        from twocaptcha import TwoCaptcha
+        solver = TwoCaptcha(api_key)
+        result = solver.turnstile(sitekey=sitekey, url=page_url)
+        token = result.get('code', '')
+        if token and len(token) > 10:
+            print(json.dumps({"step": f"2Captcha Turnstile solved! (id={result.get('id', '?')})"}), flush=True)
+            return token
+        print(json.dumps({"step": "2Captcha returned empty token"}), flush=True)
+        return None
+    except Exception as e:
+        print(json.dumps({"step": f"2Captcha error: {e}"}), flush=True)
+        return None
+
+
 def solve_turnstile_isolated(context, url: str, sitekey: str) -> Optional[str]:
     """
     Solve Turnstile in an isolated page (FREE — no 2Captcha).
@@ -264,10 +282,13 @@ def main():
     parser.add_argument("--password", default="", help="Password (auto-gen if empty)")
     parser.add_argument("--headless", action="store_true", help="Run headless (needs Xvfb)")
     parser.add_argument("--telegram-chat-id", default="", help="Telegram chat ID")
+    parser.add_argument("--2captcha-key", dest="twocaptcha_key", default="",
+                        help="2Captcha API key (or env TWOCAPTCHA_API_KEY)")
     args = parser.parse_args()
 
     email = random_email() if not args.email or args.email == "auto-gen" else args.email
     password = random_password() if not args.password or args.password == "auto-gen" else args.password
+    twocaptcha_key = args.twocaptcha_key or os.environ.get("TWOCAPTCHA_API_KEY", "")
     mail_password = f"Mail_{random.randint(100000,999999)}"
 
     print(json.dumps({"step": "Memulai Cloudflare Auto-Signup", "email": email}), flush=True)
@@ -320,68 +341,67 @@ def main():
             print(json.dumps({"status": "error", "error": "Form signup tidak ditemukan setelah 6 attempts", "screenshot": "/tmp/cf_debug_signup.png"}), flush=True)
             return
 
-        # ── Step 6: Solve Turnstile (isolated page) ──
+        # ── Step 6: Solve Turnstile ──
         sitekey = extract_sitekey(page)
         turnstile_token = None
 
-        if sitekey:
-            turnstile_token = solve_turnstile_isolated(browser, page.url, sitekey)
-        else:
-            print(json.dumps({"step": "Sitekey tidak ditemukan, coba inject default sitekey..."}), flush=True)
-            # Try known Cloudflare signup sitekey
+        # Try known sitekeys if not found on page
+        if not sitekey:
+            print(json.dumps({"step": "Sitekey tidak ditemukan di halaman, coba known sitekeys..."}), flush=True)
             for known_sk in [
                 "0x4AAAAAAAJel0iaAR3mgkjp",
                 "0x4AAAAAAADnPIDROrmt1Wwj",
                 "0x4AAAAAAAB4RPRnHlHv8V3Q",
             ]:
-                turnstile_token = solve_turnstile_isolated(browser, page.url, known_sk)
-                if turnstile_token:
-                    break
+                sitekey = known_sk
+                break
 
-        # Fallback: try clicking the actual Turnstile iframe checkbox on the page
-        if not turnstile_token:
-            print(json.dumps({"step": "Coba solve Turnstile via iframe click di halaman..."}), flush=True)
-            for attempt in range(10):
-                try:
-                    # Find Turnstile iframe
-                    iframes = page.frames
-                    for frame in iframes:
-                        if "challenges.cloudflare.com" in (frame.url or ""):
-                            # Try clicking the checkbox in the iframe
-                            try:
-                                checkbox = frame.query_selector('input[type="checkbox"]')
-                                if checkbox:
-                                    checkbox.click()
-                                    print(json.dumps({"step": f"Clicked checkbox in iframe (attempt {attempt+1})"}), flush=True)
-                                else:
-                                    # Click the body of the iframe
-                                    frame.click("body")
-                            except Exception as e:
-                                pass
-                except:
-                    pass
+        if sitekey:
+            # Method 1: 2Captcha (paid, reliable)
+            if twocaptcha_key:
+                turnstile_token = solve_turnstile_2captcha(sitekey, page.url, twocaptcha_key)
 
-                time.sleep(3)
+            # Method 2: Free isolated page (may not work)
+            if not turnstile_token:
+                turnstile_token = solve_turnstile_isolated(browser, page.url, sitekey)
 
-                # Check for token in page
-                try:
-                    token_val = page.evaluate("""() => {
-                        const names = ['cf-turnstile-response', 'cf_challenge_response'];
-                        for (const n of names) {
-                            const el = document.querySelector(`[name="${n}"]`);
-                            if (el && el.value && el.value.length > 10) return el.value;
-                        }
-                        return null;
-                    }""")
-                    if token_val:
-                        turnstile_token = token_val
-                        print(json.dumps({"step": f"Turnstile solved via iframe click! ({(attempt+1)*3}s)"}), flush=True)
-                        break
-                except:
-                    pass
+            # Method 3: Click iframe checkbox on actual page
+            if not turnstile_token:
+                print(json.dumps({"step": "Coba solve Turnstile via iframe click di halaman..."}), flush=True)
+                for attempt in range(8):
+                    try:
+                        for frame in page.frames:
+                            if "challenges.cloudflare.com" in (frame.url or ""):
+                                try:
+                                    checkbox = frame.query_selector('input[type="checkbox"]')
+                                    if checkbox:
+                                        checkbox.click()
+                                    else:
+                                        frame.click("body")
+                                except:
+                                    pass
+                    except:
+                        pass
 
-                if attempt < 5:
-                    print(json.dumps({"step": f"Turnstile iframe clicking... ({(attempt+1)*3}s)"}), flush=True)
+                    time.sleep(3)
+                    try:
+                        token_val = page.evaluate("""() => {
+                            const names = ['cf-turnstile-response', 'cf_challenge_response'];
+                            for (const n of names) {
+                                const el = document.querySelector(`[name="${n}"]`);
+                                if (el && el.value && el.value.length > 10) return el.value;
+                            }
+                            return null;
+                        }""")
+                        if token_val:
+                            turnstile_token = token_val
+                            print(json.dumps({"step": f"Turnstile solved via iframe! ({(attempt+1)*3}s)"}), flush=True)
+                            break
+                    except:
+                        pass
+
+                    if attempt < 4:
+                        print(json.dumps({"step": f"Turnstile iframe clicking... ({(attempt+1)*3}s)"}), flush=True)
 
         if turnstile_token:
             inject_turnstile_token(page, turnstile_token)
@@ -465,7 +485,11 @@ def main():
         # Solve turnstile on login page too
         login_sitekey = extract_sitekey(page)
         if login_sitekey:
-            login_token = solve_turnstile_isolated(browser, page.url, login_sitekey)
+            login_token = None
+            if twocaptcha_key:
+                login_token = solve_turnstile_2captcha(login_sitekey, page.url, twocaptcha_key)
+            if not login_token:
+                login_token = solve_turnstile_isolated(browser, page.url, login_sitekey)
             if login_token:
                 inject_turnstile_token(page, login_token)
 
