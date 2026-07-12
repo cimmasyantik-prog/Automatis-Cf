@@ -47,3 +47,10 @@ jobs:
             --chat-id "${{ github.event.inputs.telegram_chat_id }}" \
             --bot-token "$TELEGRAM_BOT_TOKEN" \
             --output-file /dev/stdin <<< "$(grep '"status"' output.log | tail -1)"
+
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: screenshots
+          path: /tmp/*.png
