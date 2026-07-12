@@ -273,23 +273,43 @@ def main():
         time.sleep(5)
 
         # Wait for CF challenge to pass
-        for _ in range(30):
+        print(json.dumps({"step": "Menunggu Cloudflare challenge..."}))
+        for i in range(60):
             title = page.title()
-            if "Just a moment" in title or "challenge" in title.lower():
+            url = page.url
+            if "Just a moment" in title or "challenge" in title.lower() or "Attention Required" in title:
+                if i % 5 == 0:
+                    print(json.dumps({"step": f"CF challenge in progress... ({i}s)"}))
                 time.sleep(2)
-            else:
+            elif "sign-up" in url or "login" in url or "dash.cloudflare" in url:
+                print(json.dumps({"step": f"CF challenge passed! URL: {url}"}))
                 break
+            else:
+                time.sleep(1)
+
+        time.sleep(3)
 
         # Step 2: Wait for form
         print(json.dumps({"step": "Menunggu form signup..."}))
-        for attempt in range(5):
+        for attempt in range(8):
             try:
-                page.wait_for_selector('input[type="email"], input[name="email"]', timeout=10000)
+                page.wait_for_selector('input[type="email"], input[name="email"], input[placeholder*="mail"]', timeout=10000)
+                print(json.dumps({"step": "Form signup ditemukan!"}))
                 break
             except:
                 print(json.dumps({"step": f"Form belum muncul (attempt {attempt+1}), reload..."}))
-                page.reload(wait_until="load", timeout=20000)
-                time.sleep(3)
+                try:
+                    page.reload(wait_until="load", timeout=20000)
+                except:
+                    page.goto("https://dash.cloudflare.com/sign-up", wait_until="domcontentloaded", timeout=30000)
+                time.sleep(5)
+                # Wait for challenge again after reload
+                for _ in range(30):
+                    title = page.title()
+                    if "Just a moment" in title or "challenge" in title.lower():
+                        time.sleep(2)
+                    else:
+                        break
 
         # Step 3: Solve Turnstile (isolated page approach)
         sitekey = extract_sitekey(page)
