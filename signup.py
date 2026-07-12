@@ -140,6 +140,16 @@ def wait_for_cloudflare_challenge(page, timeout=90):
 def solve_turnstile_drission(page, timeout=45):
     """Bypasses Cloudflare Turnstile using DrissionPage's iframe navigation"""
     print(json.dumps({"step": "Mencari Turnstile checkbox..."}), flush=True)
+    
+    # Debug: print all iframes on the page
+    try:
+        iframes = page.eles('tag:iframe')
+        print(json.dumps({"step": f"Ditemukan {len(iframes)} iframe di halaman"}), flush=True)
+        for i, ifr in enumerate(iframes):
+            print(json.dumps({"step": f"Iframe {i}: src={ifr.attr('src') or ''}, id={ifr.attr('id') or ''}, name={ifr.attr('name') or ''}"}), flush=True)
+    except Exception as e:
+        print(json.dumps({"step": f"Gagal list debug iframes: {str(e)}"}), flush=True)
+
     deadline = time.time() + timeout
     while time.time() < deadline:
         try:
