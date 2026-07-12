@@ -1,0 +1,67 @@
+name: Cloudflare Auto-Signup (Camoufox)
+
+on:
+  workflow_dispatch:
+    inputs:
+      email:
+        description: 'Email for signup (Ammail format)'
+        required: true
+      password:
+        description: 'Password for Cloudflare account'
+        required: true
+      ammail_base_url:
+        description: 'Ammail Base URL API'
+        required: true
+        default: 'https://ammail.klipers.site'
+      ammail_host_header:
+        description: 'Custom Host header for Ammail'
+        required: false
+        default: 'ammail.klipers.site'
+      telegram_chat_id:
+        description: 'Telegram Chat ID to notify result'
+        required: true
+
+jobs:
+  signup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-state: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install playwright
+          python -m playwright install --with-deps firefox
+
+      - name: Install Camoufox
+        run: |
+          pip install camoufox
+          python -m camoufox fetch
+
+      - name: Run Cloudflare Signup Script
+        env:
+          TWOCAPTCHA_API_KEY: ${{ secrets.TWOCAPTCHA_API_KEY }}
+          AMMAIL_API_KEY: ${{ secrets.AMMAIL_API_KEY }}
+        run: |
+          # Jalankan python cloudflare_signup.py
+          python cloudflare_signup.py \
+            --email "${{ github.event.inputs.email }}" \
+            --password "${{ github.event.inputs.password }}" \
+            --ammail-base "${{ github.event.inputs.ammail_base_url }}" \
+            --ammail-key "$AMMAIL_API_KEY" \
+            --ammail-host "${{ github.event.inputs.ammail_host_header }}" \
+            --captcha-key "$TWOCAPTCHA_API_KEY" > output.json 2>&1 || true
+          
+          cat output.json
+          
+          # Kirim hasil ke Webhook API / Telegram
+          python notify_telegram.py \
+            --chat-id "${{ github.event.inputs.telegram_chat_id }}" \
+            --bot-token "${{ secrets.TELEGRAM_BOT_TOKEN }}" \
+            --output-file output.json
