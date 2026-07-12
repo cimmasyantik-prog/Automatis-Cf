@@ -209,11 +209,32 @@ def main():
     # DO NOT set headless(True). Instead, run in headed mode inside Xvfb (virtual frame buffer)
     # This prevents Cloudflare from detecting the headless flag and blocking us.
     co.headless(False)
+    
+    # Auto-detect browser path on Linux/CI
+    import os
+    chrome_paths = [
+        '/usr/bin/google-chrome',
+        '/usr/bin/google-chrome-stable',
+        '/usr/bin/chromium-browser',
+        '/usr/bin/chromium',
+        '/usr/bin/chrome'
+    ]
+    for path in chrome_paths:
+        if os.path.exists(path):
+            co.set_paths(browser_path=path)
+            print(json.dumps({"step": f"Menggunakan browser Chrome di: {path}"}), flush=True)
+            break
+            
+    # Set unique user data path to avoid conflicts
+    co.set_paths(user_data_path='/tmp/chrome_user_data')
+    
     # Anti-detect arguments
     co.set_argument('--no-sandbox')
     co.set_argument('--disable-gpu')
     co.set_argument('--disable-dev-shm-usage')
     co.set_argument('--start-maximized')
+    co.set_argument('--no-first-run')
+    co.set_argument('--no-default-browser-check')
     co.set_user_agent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
 
     page = ChromiumPage(co)
