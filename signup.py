@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
 Cloudflare Workers AI Auto-Signup
-Camoufox (anti-detect Firefox) + 2Captcha Turnstile + mail.tm
+Using DrissionPage (CDP-based Chrome driver) + mail.tm
+No 2Captcha needed — Turnstile solved via DrissionPage's click / shadow DOM capabilities.
 """
 
 import sys
@@ -10,7 +11,6 @@ import time
 import json
 import random
 import string
-import os
 import urllib.request
 import urllib.parse
 from typing import Optional
@@ -51,7 +51,6 @@ def mail_tm_get_token(email: str, password: str):
     return data.get("token")
 
 def mail_tm_wait_verify_link(email: str, password: str, timeout: int = 180) -> Optional[str]:
-    """Poll mail.tm inbox for Cloudflare verification link"""
     try:
         token = mail_tm_get_token(email, password)
     except Exception as e:
@@ -88,14 +87,12 @@ def mail_tm_wait_verify_link(email: str, password: str, timeout: int = 180) -> O
                     full_msg = json.loads(urllib.request.urlopen(req2, timeout=10).read().decode())
                     html = full_msg.get("html", [""])[0] if isinstance(full_msg.get("html"), list) else full_msg.get("html", "")
 
-                    # Try direct verify link
                     match = re.search(r'https://dash\.cloudflare\.com/[^\s"\'<>]+verify[^\s"\'<>]*', html)
                     if match:
                         link = match.group(0).replace("&amp;", "&")
                         print(json.dumps({"step": "Link verifikasi ditemukan!"}), flush=True)
                         return link
 
-                    # Any CF link
                     match = re.search(r'(https://[^\s"\'<>]*cloudflare[^\s"\'<>]*)', html)
                     if match:
                         link = match.group(1).replace("&amp;", "&")
@@ -109,449 +106,208 @@ def mail_tm_wait_verify_link(email: str, password: str, timeout: int = 180) -> O
     print(json.dumps({"step": f"Timeout menunggu email ({timeout}s)"}), flush=True)
     return None
 
-# ── Turnstile Solver (Isolated Page Approach — from Theyka) ──────────────────
-
-TURNSTILE_HTML = """<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Turnstile Solver</title>
-    <script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async></script>
-</head>
-<body>
-    <!-- cf turnstile -->
-</body>
-</html>"""
-
-
-def extract_sitekey(page) -> Optional[str]:
-    """Extract Turnstile sitekey from page via multiple methods"""
-    try:
-        # Method 1: data-sitekey
-        el = page.query_selector('[data-sitekey]')
-        if el:
-            sk = el.get_attribute('data-sitekey')
-            if sk:
-                return sk
-
-        # Method 2: page source
-        content = page.content()
-        for pattern in [
-            r'data-sitekey=["\']([0-9A-Za-z_-]+)',
-            r'sitekey["\s:]+["\']?([0-9A-Za-z_-]+)',
-        ]:
-            match = re.search(pattern, content)
-            if match:
-                return match.group(1)
-
-        # Method 3: iframe src
-        iframe = page.query_selector('iframe[src*="challenges.cloudflare.com"]')
-        if iframe:
-            src = iframe.get_attribute('src')
-            match = re.search(r'sitekey=([0-9A-Za-z_-]+)', src)
-            if match:
-                return match.group(1)
-    except Exception as e:
-        print(json.dumps({"step": f"Sitekey extraction error: {e}"}), flush=True)
-    return None
-
-
-def solve_turnstile_2captcha(sitekey: str, page_url: str, api_key: str) -> Optional[str]:
-    """Solve Turnstile using 2Captcha API (paid, reliable)"""
-    print(json.dumps({"step": f"Solve Turnstile via 2Captcha (sitekey={sitekey[:25]}...)"}), flush=True)
-    try:
-        from twocaptcha import TwoCaptcha
-        solver = TwoCaptcha(api_key)
-        result = solver.turnstile(sitekey=sitekey, url=page_url)
-        token = result.get('code', '')
-        if token and len(token) > 10:
-            print(json.dumps({"step": f"2Captcha Turnstile solved! (id={result.get('id', '?')})"}), flush=True)
-            return token
-        print(json.dumps({"step": "2Captcha returned empty token"}), flush=True)
-        return None
-    except Exception as e:
-        print(json.dumps({"step": f"2Captcha error: {e}"}), flush=True)
-        return None
-
-
-def solve_turnstile_isolated(context, url: str, sitekey: str) -> Optional[str]:
-    """
-    Solve Turnstile in an isolated page (FREE — no 2Captcha).
-    Based on Theyka/Turnstile-Solver isolated page approach.
-    """
-    print(json.dumps({"step": f"Solve Turnstile (isolated, sitekey={sitekey[:25]}...)"}), flush=True)
-    solver_page = context.new_page()
-
-    try:
-        turnstile_div = f'<div class="cf-turnstile" data-sitekey="{sitekey}"></div>'
-        page_data = TURNSTILE_HTML.replace("<!-- cf turnstile -->", turnstile_div)
-
-        url_with_slash = url + "/" if not url.endswith("/") else url
-        solver_page.route(url_with_slash, lambda route: route.fulfill(body=page_data, status=200))
-        solver_page.goto(url_with_slash)
-
-        for attempt in range(20):
-            solver_page.wait_for_timeout(2000)
-
-            # Try clicking the checkbox
-            try:
-                td = solver_page.query_selector('.cf-turnstile')
-                if td:
-                    td.click()
-            except:
-                pass
-
-            # Check for token
-            try:
-                token_val = solver_page.input_value('[name="cf-turnstile-response"]')
-                if token_val and len(token_val) > 10:
-                    print(json.dumps({"step": f"Turnstile solved! ({(attempt+1)*2}s)"}), flush=True)
-                    return token_val
-            except:
-                pass
-
-            if attempt < 10:
-                print(json.dumps({"step": f"Turnstile solving... ({(attempt+1)*2}s)"}), flush=True)
-
-        print(json.dumps({"step": "Turnstile timeout (40s)"}), flush=True)
-        return None
-    except Exception as e:
-        print(json.dumps({"step": f"Turnstile solver error: {e}"}), flush=True)
-        return None
-    finally:
-        try:
-            solver_page.close()
-        except:
-            pass
-
-
-def inject_turnstile_token(page, token: str):
-    """Inject solved Turnstile token into the page"""
-    page.evaluate("""(token) => {
-        const names = ['cf-turnstile-response', 'cf_challenge_response'];
-        for (const n of names) {
-            const el = document.querySelector(`[name="${n}"]`);
-            if (el) { el.value = token; return; }
-        }
-        const h = document.createElement("input");
-        h.type = "hidden"; h.name = "cf-turnstile-response"; h.value = token;
-        document.body.appendChild(h);
-    }""", token)
-
-
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 def random_password(length=14):
+    # CF needs: 8+ chars, upper, lower, number, special
     chars = string.ascii_letters + string.digits
-    pw = ''.join(random.choice(chars) for _ in range(length))
+    pw = ''.join(random.choice(chars) for _ in range(length - 3))
+    # inject necessary character classes
+    pw = pw + 'A' + '1' + '@'
     return pw
 
-def wait_for_cloudflare(page, timeout=120):
-    """Wait for Cloudflare 'Just a moment...' challenge to pass"""
-    print(json.dumps({"step": "Menunggu Cloudflare challenge..."}), flush=True)
-    for i in range(timeout):
-        title = page.title()
-        url = page.url
-        if "Just a moment" in title or "Attention Required" in title:
-            if i % 10 == 0:
-                print(json.dumps({"step": f"CF challenge berjalan... ({i}s)"}), flush=True)
-            time.sleep(2)
-        else:
-            if i > 0:
-                print(json.dumps({"step": f"CF challenge passed! ({i}s) url={url}"}), flush=True)
-            else:
-                print(json.dumps({"step": "Tidak ada CF challenge, langsung lanjut"}), flush=True)
-            return True
-    print(json.dumps({"step": f"CF challenge timeout ({timeout}s)"}), flush=True)
-    return False
-
 def random_email():
-    """Generate random email using available mail.tm domain"""
     domain = mail_tm_get_domain()
     username = ''.join(random.choices(string.ascii_lowercase + string.digits, k=12))
     return f"{username}@{domain}"
 
+def wait_for_cloudflare_challenge(page, timeout=90):
+    """Wait for 'Just a moment' challenge to pass on DrissionPage"""
+    print(json.dumps({"step": "Menunggu Cloudflare challenge..."}), flush=True)
+    for i in range(timeout):
+        title = page.title
+        url = page.url
+        if "Just a moment" in title or "Attention Required" in title or "challenge" in title.lower():
+            if i % 10 == 0:
+                print(json.dumps({"step": f"CF challenge berjalan... ({i}s)"}), flush=True)
+            time.sleep(2)
+        else:
+            print(json.dumps({"step": f"CF challenge passed! url={url}"}), flush=True)
+            return True
+    print(json.dumps({"step": f"CF challenge timeout ({timeout}s)"}), flush=True)
+    return False
+
+def solve_turnstile_drission(page, timeout=30):
+    """Try to find and click Turnstile checkbox using DrissionPage's shadow DOM selector"""
+    print(json.dumps({"step": "Mencari Turnstile checkbox..."}), flush=True)
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            # DrissionPage can easily find iframes
+            iframes = page.eles('tag:iframe')
+            for iframe in iframes:
+                src = iframe.attr('src') or ''
+                if 'challenges.cloudflare.com' in src:
+                    # Access iframe inner element (DrissionPage handles cross-origin iframes gracefully in many cases)
+                    # Try clicking the checkbox directly
+                    chk = iframe.ele('tag:input@type=checkbox', timeout=2)
+                    if chk:
+                        chk.click()
+                        print(json.dumps({"step": "Turnstile checkbox di-click!"}), flush=True)
+                        time.sleep(3)
+                        return True
+                    else:
+                        # Fallback click on body center
+                        iframe.click()
+                        print(json.dumps({"step": "Iframe di-click (fallback)..."}), flush=True)
+                        time.sleep(3)
+                        return True
+        except Exception as e:
+            pass
+        time.sleep(2)
+    print(json.dumps({"step": "Turnstile checkbox tidak ditemukan atau gagal diklik"}), flush=True)
+    return False
 
 # ── Main Flow ────────────────────────────────────────────────────────────────
 
 def main():
     import argparse
-    parser = argparse.ArgumentParser(description="Cloudflare Workers AI Auto-Signup")
+    parser = argparse.ArgumentParser(description="Cloudflare Auto-Signup via DrissionPage")
     parser.add_argument("--email", default="", help="Email for signup (auto-gen if empty)")
     parser.add_argument("--password", default="", help="Password (auto-gen if empty)")
-    parser.add_argument("--headless", action="store_true", help="Run headless (needs Xvfb)")
+    parser.add_argument("--headless", action="store_true", help="Run headless")
     parser.add_argument("--telegram-chat-id", default="", help="Telegram chat ID")
-    parser.add_argument("--2captcha-key", dest="twocaptcha_key", default="",
-                        help="2Captcha API key (or env TWOCAPTCHA_API_KEY)")
     args = parser.parse_args()
 
     email = random_email() if not args.email or args.email == "auto-gen" else args.email
     password = random_password() if not args.password or args.password == "auto-gen" else args.password
-    twocaptcha_key = args.twocaptcha_key or os.environ.get("TWOCAPTCHA_API_KEY", "")
     mail_password = f"Mail_{random.randint(100000,999999)}"
 
-    print(json.dumps({"step": "Memulai Cloudflare Auto-Signup", "email": email}), flush=True)
+    print(json.dumps({"step": "Memulai Cloudflare Auto-Signup (DrissionPage)", "email": email}), flush=True)
 
-    # ── Step 1: Create mail.tm inbox ──
-    print(json.dumps({"step": f"Membuat inbox mail.tm ({email})..."}), flush=True)
+    # 1. Create temp email
+    print(json.dumps({"step": f"Membuat inbox mail.tm ({email})...."}), flush=True)
     try:
         mail_tm_create_account(email, mail_password)
         print(json.dumps({"step": "Inbox mail.tm OK!"}), flush=True)
     except Exception as e:
-        print(json.dumps({"step": f"Mail.tm inbox warning: {e} (might exist already)"}), flush=True)
+        print(json.dumps({"step": f"Mail.tm inbox warning: {e}"}), flush=True)
 
-    # ── Step 2: Launch Camoufox browser ──
-    print(json.dumps({"step": "Meluncurkan Camoufox (anti-detect Firefox)..."}), flush=True)
-    from camoufox.sync_api import Camoufox
+    # 2. Launch Chromium via DrissionPage
+    print(json.dumps({"step": "Meluncurkan Chromium via DrissionPage..."}), flush=True)
+    from DrissionPage import ChromiumPage, ChromiumOptions
 
-    with Camoufox(headless=args.headless) as browser:
-        page = browser.new_page()
+    co = ChromiumOptions()
+    if args.headless:
+        co.headless(True)
+    # Anti-detect arguments
+    co.set_argument('--no-sandbox')
+    co.set_argument('--disable-gpu')
+    co.set_argument('--disable-dev-shm-usage')
+    co.set_argument('--start-maximized')
+    co.set_user_agent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
 
-        # ── Step 3: Open signup page ──
-        print(json.dumps({"step": "Membuka dash.cloudflare.com/sign-up..."}), flush=True)
-        page.goto("https://dash.cloudflare.com/sign-up", wait_until="domcontentloaded", timeout=60000)
+    page = ChromiumPage(co)
 
-        # ── Step 4: Wait for CF challenge ──
-        wait_for_cloudflare(page)
+    try:
+        # 3. Go to Signup
+        print(json.dumps({"step": "Membuka registrasi Cloudflare..."}), flush=True)
+        page.get("https://dash.cloudflare.com/sign-up")
+        wait_for_cloudflare_challenge(page)
         time.sleep(5)
 
-        # ── Step 5: Wait for form ──
-        print(json.dumps({"step": "Menunggu form signup..."}), flush=True)
-        form_found = False
-        for attempt in range(6):
-            try:
-                page.wait_for_selector(
-                    'input[type="email"], input[name="email"], input[placeholder*="mail"]',
-                    timeout=10000
-                )
-                print(json.dumps({"step": "Form signup ditemukan!"}), flush=True)
-                form_found = True
-                break
-            except:
-                print(json.dumps({"step": f"Form belum muncul (attempt {attempt+1}), reload..."}), flush=True)
-                page.reload(wait_until="load", timeout=30000)
-                time.sleep(5)
-                wait_for_cloudflare(page, timeout=60)
-                time.sleep(3)
+        # Solve Turnstile
+        solve_turnstile_drission(page)
 
-        if not form_found:
-            # Take debug screenshot
-            page.screenshot(path="/tmp/cf_debug_signup.png")
-            print(json.dumps({"status": "error", "error": "Form signup tidak ditemukan setelah 6 attempts", "screenshot": "/tmp/cf_debug_signup.png"}), flush=True)
+        # 4. Fill form
+        print(json.dumps({"step": "Mengisi form registrasi..."}), flush=True)
+        
+        email_input = page.ele('css:input[type="email"]', timeout=10) or page.ele('css:input[name="email"]', timeout=5)
+        if not email_input:
+            page.get_screenshot(path="/tmp/cf_no_form.png")
+            print(json.dumps({"status": "error", "error": "Form signup tidak ditemukan", "screenshot": "/tmp/cf_no_form.png"}), flush=True)
             return
 
-        # ── Step 6: Solve Turnstile ──
-        sitekey = extract_sitekey(page)
-        turnstile_token = None
+        email_input.input(email)
+        
+        pw_input = page.ele('css:input[type="password"]', timeout=5) or page.ele('css:input[name="password"]', timeout=5)
+        if pw_input:
+            pw_input.input(password)
 
-        # Try known sitekeys if not found on page
-        if not sitekey:
-            print(json.dumps({"step": "Sitekey tidak ditemukan di halaman, coba known sitekeys..."}), flush=True)
-            for known_sk in [
-                "0x4AAAAAAAJel0iaAR3mgkjp",
-                "0x4AAAAAAADnPIDROrmt1Wwj",
-                "0x4AAAAAAAB4RPRnHlHv8V3Q",
-            ]:
-                sitekey = known_sk
-                break
+        time.sleep(1)
 
-        if sitekey:
-            # Method 1: 2Captcha (paid, reliable)
-            if twocaptcha_key:
-                turnstile_token = solve_turnstile_2captcha(sitekey, page.url, twocaptcha_key)
-
-            # Method 2: Free isolated page (may not work)
-            if not turnstile_token:
-                turnstile_token = solve_turnstile_isolated(browser, page.url, sitekey)
-
-            # Method 3: Click iframe checkbox on actual page
-            if not turnstile_token:
-                print(json.dumps({"step": "Coba solve Turnstile via iframe click di halaman..."}), flush=True)
-                for attempt in range(8):
-                    try:
-                        for frame in page.frames:
-                            if "challenges.cloudflare.com" in (frame.url or ""):
-                                try:
-                                    checkbox = frame.query_selector('input[type="checkbox"]')
-                                    if checkbox:
-                                        checkbox.click()
-                                    else:
-                                        frame.click("body")
-                                except:
-                                    pass
-                    except:
-                        pass
-
-                    time.sleep(3)
-                    try:
-                        token_val = page.evaluate("""() => {
-                            const names = ['cf-turnstile-response', 'cf_challenge_response'];
-                            for (const n of names) {
-                                const el = document.querySelector(`[name="${n}"]`);
-                                if (el && el.value && el.value.length > 10) return el.value;
-                            }
-                            return null;
-                        }""")
-                        if token_val:
-                            turnstile_token = token_val
-                            print(json.dumps({"step": f"Turnstile solved via iframe! ({(attempt+1)*3}s)"}), flush=True)
-                            break
-                    except:
-                        pass
-
-                    if attempt < 4:
-                        print(json.dumps({"step": f"Turnstile iframe clicking... ({(attempt+1)*3}s)"}), flush=True)
-
-        if turnstile_token:
-            inject_turnstile_token(page, turnstile_token)
-            print(json.dumps({"step": "Turnstile token injected!"}), flush=True)
+        # Submit
+        print(json.dumps({"step": "Submit form..."}), flush=True)
+        submit_btn = page.ele('css:button[type="submit"]') or page.ele('text:Sign up')
+        if submit_btn:
+            submit_btn.click()
         else:
-            print(json.dumps({"step": "Turnstile tidak ter-solve, lanjut tanpa token..."}), flush=True)
-
-        # ── Step 7: Fill form ──
-        print(json.dumps({"step": f"Mengisi form: {email}"}), flush=True)
-
-        email_filled = False
-        for sel in ['input[type="email"]', 'input[name="email"]', 'input[placeholder*="mail"]']:
-            try:
-                page.fill(sel, email)
-                email_filled = True
-                print(json.dumps({"step": "Email terisi!"}), flush=True)
-                break
-            except:
-                continue
-
-        if not email_filled:
-            page.screenshot(path="/tmp/cf_debug_noemail.png")
-            print(json.dumps({"status": "error", "error": "Email input tidak ditemukan", "screenshot": "/tmp/cf_debug_noemail.png"}), flush=True)
-            return
-
-        pw_filled = False
-        for sel in ['input[type="password"]', 'input[name="password"]', 'input[placeholder*="assword"]']:
-            try:
-                page.fill(sel, password)
-                pw_filled = True
-                print(json.dumps({"step": "Password terisi!"}), flush=True)
-                break
-            except:
-                continue
-
-        if not pw_filled:
-            print(json.dumps({"status": "error", "error": "Password input tidak ditemukan"}), flush=True)
-            return
-
-        time.sleep(2)
-
-        # ── Step 8: Submit ──
-        print(json.dumps({"step": "Submit form registrasi..."}), flush=True)
-        submit_clicked = False
-        for sel in ['button[type="submit"]', 'button:has-text("Sign up")', 'button:has-text("Create")']:
-            try:
-                page.click(sel, timeout=5000)
-                submit_clicked = True
-                break
-            except:
-                continue
-
-        if not submit_clicked:
-            page.keyboard.press("Enter")
+            page.actions.key_down('Enter').key_up('Enter')
 
         time.sleep(15)
-        page.screenshot(path="/tmp/cf_after_signup.png")
+        page.get_screenshot(path="/tmp/cf_after_signup.png")
+        print(json.dumps({"step": f"Post-signup URL: {page.url}"}), flush=True)
 
-        current_url = page.url
-        print(json.dumps({"step": f"Post-signup URL: {current_url}"}), flush=True)
-
-        # ── Step 9: Wait for verification email ──
-        print(json.dumps({"step": "Menunggu email verifikasi dari Cloudflare..."}), flush=True)
+        # 5. Wait for Verification email
+        print(json.dumps({"step": "Menunggu email verifikasi..."}), flush=True)
         verify_link = mail_tm_wait_verify_link(email, mail_password, timeout=180)
 
         if verify_link:
             print(json.dumps({"step": "Membuka link verifikasi..."}), flush=True)
-            page.goto(verify_link, wait_until="domcontentloaded", timeout=30000)
-            wait_for_cloudflare(page, timeout=60)
+            page.get(verify_link)
+            wait_for_cloudflare_challenge(page)
             time.sleep(5)
             print(json.dumps({"step": "Email terverifikasi!"}), flush=True)
         else:
-            print(json.dumps({"step": "Email verifikasi tidak ditemukan, coba login langsung..."}), flush=True)
+            print(json.dumps({"step": "Email verifikasi tidak ditemukan, mencoba login langsung..."}), flush=True)
 
-        # ── Step 10: Login ──
+        # 6. Login
         print(json.dumps({"step": "Login ke Cloudflare Dashboard..."}), flush=True)
-        page.goto("https://dash.cloudflare.com/login", wait_until="domcontentloaded", timeout=60000)
-        wait_for_cloudflare(page, timeout=60)
+        page.get("https://dash.cloudflare.com/login")
+        wait_for_cloudflare_challenge(page)
         time.sleep(5)
 
-        # Solve turnstile on login page too
-        login_sitekey = extract_sitekey(page)
-        if login_sitekey:
-            login_token = None
-            if twocaptcha_key:
-                login_token = solve_turnstile_2captcha(login_sitekey, page.url, twocaptcha_key)
-            if not login_token:
-                login_token = solve_turnstile_isolated(browser, page.url, login_sitekey)
-            if login_token:
-                inject_turnstile_token(page, login_token)
+        solve_turnstile_drission(page)
 
-        # Fill login form
-        for sel in ['input[type="email"]', 'input[name="email"]']:
-            try:
-                page.fill(sel, email)
-                break
-            except:
-                continue
-
-        for sel in ['input[type="password"]', 'input[name="password"]']:
-            try:
-                page.fill(sel, password)
-                break
-            except:
-                continue
+        # Fill Login
+        email_login = page.ele('css:input[type="email"]') or page.ele('css:input[name="email"]')
+        if email_login:
+            email_login.input(email)
+        
+        pw_login = page.ele('css:input[type="password"]') or page.ele('css:input[name="password"]')
+        if pw_login:
+            pw_login.input(password)
 
         time.sleep(1)
-        for sel in ['button[type="submit"]', 'button:has-text("Log")']:
-            try:
-                page.click(sel, timeout=5000)
-                break
-            except:
-                continue
-
+        
+        submit_login = page.ele('css:button[type="submit"]') or page.ele('text:Sign in')
+        if submit_login:
+            submit_login.click()
+        
         time.sleep(10)
-        wait_for_cloudflare(page, timeout=60)
+        wait_for_cloudflare_challenge(page)
 
-        current_url = page.url
-        print(json.dumps({"step": f"Post-login URL: {current_url}"}), flush=True)
+        print(json.dumps({"step": f"Post-login URL: {page.url}"}), flush=True)
 
-        if "/login" in current_url:
-            page.screenshot(path="/tmp/cf_debug_login.png")
-            page_text = page.inner_text("body")[:500]
-            print(json.dumps({"status": "error", "error": f"Login gagal: {page_text}", "screenshot": "/tmp/cf_debug_login.png"}), flush=True)
+        if "/login" in page.url:
+            page.get_screenshot(path="/tmp/cf_login_fail.png")
+            print(json.dumps({"status": "error", "error": f"Login gagal: {page.html[:300]}", "screenshot": "/tmp/cf_login_fail.png"}), flush=True)
             return
 
-        # ── Step 11: Get Account ID ──
+        # 7. Get Account ID
         print(json.dumps({"step": "Mengambil Account ID..."}), flush=True)
         account_id = None
-
+        current_url = page.url
         match = re.search(r'dash\.cloudflare\.com/([a-f0-9]{32})', current_url)
         if match:
             account_id = match.group(1)
 
         if not account_id:
-            page.goto("https://dash.cloudflare.com/", wait_until="domcontentloaded", timeout=30000)
+            page.get("https://dash.cloudflare.com/")
             time.sleep(5)
-            current_url = page.url
-            match = re.search(r'dash\.cloudflare\.com/([a-f0-9]{32})', current_url)
+            match = re.search(r'dash\.cloudflare\.com/([a-f0-9]{32})', page.url)
             if match:
                 account_id = match.group(1)
-
-        if not account_id:
-            try:
-                resp = page.request.get("https://api.cloudflare.com/client/v4/accounts")
-                data = json.loads(resp.text())
-                if data.get("success") and data.get("result"):
-                    account_id = data["result"][0]["id"]
-            except:
-                pass
 
         if not account_id:
             print(json.dumps({"status": "error", "error": "Account ID tidak ditemukan"}), flush=True)
@@ -559,111 +315,74 @@ def main():
 
         print(json.dumps({"step": f"Account ID: {account_id}"}), flush=True)
 
-        # ── Step 12: Create Workers AI API Token ──
-        print(json.dumps({"step": "Membuat API Token (Workers AI)..."}), flush=True)
-        page.goto("https://dash.cloudflare.com/profile/api-tokens", wait_until="domcontentloaded", timeout=30000)
+        # 8. Create API Token (Workers AI)
+        print(json.dumps({"step": "Membuat API Token..."}), flush=True)
+        page.get("https://dash.cloudflare.com/profile/api-tokens")
         time.sleep(5)
 
-        try:
-            page.click('button:has-text("Create Token"), a:has-text("Create Token")', timeout=10000)
+        create_btn = page.ele('text:Create Token')
+        if create_btn:
+            create_btn.click()
             time.sleep(3)
-        except:
-            try:
-                page.click('text=Create Token', timeout=5000)
-                time.sleep(3)
-            except:
-                print(json.dumps({"status": "error", "error": "Tidak bisa klik Create Token"}), flush=True)
-                return
 
-        try:
-            page.click('button:has-text("Create Custom Token"), a:has-text("Create Custom Token")', timeout=5000)
+        custom_btn = page.ele('text:Create Custom Token')
+        if custom_btn:
+            custom_btn.click()
             time.sleep(2)
-        except:
-            try:
-                page.click('text=Create Custom Token', timeout=5000)
-                time.sleep(2)
-            except:
-                pass
 
-        # Fill token name
+        # Token Name
         token_name = f"WorkersAI-{int(time.time())}"
-        for sel in ['input[name="name"]', 'input[placeholder*="name"]', 'input[placeholder*="Name"]']:
-            try:
-                page.fill(sel, token_name)
-                break
-            except:
-                continue
+        name_input = page.ele('css:input[name="name"]') or page.ele('css:input[placeholder*="name"]')
+        if name_input:
+            name_input.input(token_name)
 
         time.sleep(1)
 
-        # Add Workers AI permission
-        try:
-            page.click('button:has-text("Add Permission"), a:has-text("Add Permission")', timeout=5000)
+        # Add Permission: Account -> Workers AI -> Edit
+        add_perm = page.ele('text:Add Permission')
+        if add_perm:
+            add_perm.click()
             time.sleep(1)
-        except:
-            pass
 
-        try:
-            page.select_option('select >> nth=0', label="Account")
-            time.sleep(1)
-        except:
-            pass
+        # DrissionPage selects option easily
+        selects = page.eles('tag:select')
+        if len(selects) >= 3:
+            selects[0].select('Account')
+            time.sleep(0.5)
+            selects[1].select('Workers AI')
+            time.sleep(0.5)
+            selects[2].select('Edit')
+            time.sleep(0.5)
 
-        try:
-            page.select_option('select >> nth=1', label="Workers AI")
-            time.sleep(1)
-        except:
-            pass
+        continue_btn = page.ele('text:Continue') or page.ele('css:button:contains("Continue")')
+        if continue_btn:
+            continue_btn.click()
+            time.sleep(2)
 
-        try:
-            page.select_option('select >> nth=2', label="Edit")
-            time.sleep(1)
-        except:
-            pass
-
-        try:
-            page.click('button:has-text("Continue"), a:has-text("Continue")', timeout=5000)
-            time.sleep(3)
-        except:
-            pass
-
-        try:
-            page.click('button:has-text("Create Token"), input[value="Create Token"]', timeout=5000)
+        final_create = page.ele('text:Create Token') or page.ele('css:button:contains("Create Token")')
+        if final_create:
+            final_create.click()
             time.sleep(5)
-        except:
-            pass
 
-        # ── Step 13: Extract Token ──
+        # 9. Extract Token
         print(json.dumps({"step": "Mengekstrak API Token..."}), flush=True)
         api_token = None
-
-        for sel in ['input[name="token"]', 'input[readonly]', 'code']:
-            try:
-                el = page.query_selector(sel)
-                if el:
-                    tag = el.evaluate('el => el.tagName')
-                    if tag == 'INPUT':
-                        val = el.input_value()
-                    else:
-                        val = el.inner_text()
-                    if val and len(val) > 20:
-                        api_token = val
-                        break
-            except:
-                continue
+        
+        token_input = page.ele('css:input[readonly]') or page.ele('css:input[name="token"]')
+        if token_input:
+            api_token = token_input.value
+        else:
+            code_el = page.ele('tag:code')
+            if code_el:
+                api_token = code_el.text
 
         if not api_token:
-            page_text = page.inner_text('body')
-            # Look for long token-like strings
-            for match in re.finditer(r'[A-Za-z0-9_\-]{30,}', page_text):
-                candidate = match.group()
-                # Skip known non-token strings
-                if candidate.startswith('http') or 'cloudflare' in candidate.lower():
-                    continue
-                api_token = candidate
-                break
+            # Regex fallback
+            match = re.search(r'[A-Za-z0-9_\-]{40}', page.html)
+            if match:
+                api_token = match.group()
 
-        page.screenshot(path="/tmp/cf_final.png")
+        page.get_screenshot(path="/tmp/cf_final.png")
 
         if api_token:
             result = {
@@ -682,6 +401,13 @@ def main():
                 "screenshot": "/tmp/cf_final.png"
             }), flush=True)
 
+    except Exception as e:
+        print(json.dumps({"status": "error", "error": str(e)}), flush=True)
+    finally:
+        try:
+            page.quit()
+        except:
+            pass
 
 if __name__ == "__main__":
     main()

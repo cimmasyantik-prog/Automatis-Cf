@@ -1,3 +1,2 @@
-camoufox
-twocaptcha-python
+DrissionPage
 requests
