@@ -146,7 +146,7 @@ def solve_turnstile_drission(page, timeout=45):
         iframes = page.eles('tag:iframe')
         print(json.dumps({"step": f"Ditemukan {len(iframes)} iframe di halaman"}), flush=True)
         for i, ifr in enumerate(iframes):
-            print(json.dumps({"step": f"Iframe {i}: src={ifr.attr('src') or ''}, id={ifr.attr('id') or ''}, name={ifr.attr('name') or ''}"}), flush=True)
+            print(json.dumps({"step": f"Iframe {i} HTML: {ifr.html}"}), flush=True)
     except Exception as e:
         print(json.dumps({"step": f"Gagal list debug iframes: {str(e)}"}), flush=True)
 
