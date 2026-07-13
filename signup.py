@@ -138,32 +138,53 @@ def wait_for_cloudflare_challenge(page, timeout=90):
     return False
 
 def find_turnstile_iframe(page):
-    """Finds Turnstile iframe by searching known wrappers, shadow roots, and fallbacks"""
-    # Method 1: Check known wrappers
-    for wrapper_selector in ['cf-turnstile-wrapper', '.cf-turnstile', '.cf-challenge', '#turnstile-wrapper']:
-        try:
-            wrapper = page.ele(wrapper_selector, timeout=1)
-            if wrapper and wrapper.shadow_root:
-                iframe = wrapper.shadow_root.ele('tag:iframe', timeout=1)
-                if iframe:
-                    print(json.dumps({"step": f"Turnstile iframe ditemukan di shadow_root dari {wrapper_selector}"}), flush=True)
-                    return iframe
-        except Exception as e:
-            pass
-
-    # Method 2: Iterate all elements and check shadow roots
+    """Finds Turnstile iframe — fast method using JS to search shadow DOM"""
+    # Method 1: JS-based shadow DOM search (fastest — single call)
     try:
-        for ele in page.eles('css:*'):
-            try:
-                if ele.shadow_root:
-                    iframe = ele.shadow_root.ele('tag:iframe', timeout=1)
-                    if iframe:
-                        print(json.dumps({"step": f"Turnstile iframe ditemukan di shadow_root dari element: {ele.tag}"}), flush=True)
-                        return iframe
-            except:
-                pass
+        js_result = page.run_js("""
+            // Find all iframes inside shadow roots
+            function findShadowIframes(root) {
+                let results = [];
+                const allEls = root.querySelectorAll('*');
+                for (const el of allEls) {
+                    if (el.shadowRoot) {
+                        const iframes = el.shadowRoot.querySelectorAll('iframe');
+                        for (const iframe of iframes) {
+                            results.push(iframe.src || iframe.getAttribute('src') || 'no-src');
+                        }
+                        results = results.concat(findShadowIframes(el.shadowRoot));
+                    }
+                }
+                return results;
+            }
+            return JSON.stringify(findShadowIframes(document));
+        """)
+        if js_result and js_result.strip(' "[]') and js_result.strip(' "[]') != 'no-src':
+            print(json.dumps({"step": f"Shadow DOM iframes via JS: {js_result}"}), flush=True)
     except Exception as e:
         pass
+
+    # Method 2: Check known wrappers (fast — specific selectors)
+    for wrapper_selector in ['cf-turnstile-wrapper', '.cf-turnstile', '.cf-challenge', '#turnstile-wrapper', '[data-sitekey]']:
+        try:
+            wrapper = page.ele(wrapper_selector, timeout=1)
+            if wrapper:
+                # Try shadow root first
+                try:
+                    if wrapper.shadow_root:
+                        iframe = wrapper.shadow_root.ele('tag:iframe', timeout=1)
+                        if iframe:
+                            print(json.dumps({"step": f"Turnstile iframe ditemukan di shadow_root dari {wrapper_selector}"}), flush=True)
+                            return iframe
+                except:
+                    pass
+                # Try direct iframe child
+                iframe = wrapper.ele('tag:iframe', timeout=1)
+                if iframe:
+                    print(json.dumps({"step": f"Turnstile iframe ditemukan langsung di {wrapper_selector}"}), flush=True)
+                    return iframe
+        except:
+            pass
 
     # Method 3: Standard iframe lookup (fallback)
     try:
@@ -171,6 +192,38 @@ def find_turnstile_iframe(page):
         if iframe:
             print(json.dumps({"step": "Turnstile iframe ditemukan via standard selector"}), flush=True)
             return iframe
+    except:
+        pass
+
+    # Method 4: CDP-based shadow DOM deep search (nuclear option)
+    try:
+        js_deep = page.run_js("""
+            function deepSearch(root, depth) {
+                if (depth > 10) return null;
+                const els = root.querySelectorAll('*');
+                for (const el of els) {
+                    // Check if element is a Turnstile container
+                    if (el.tagName && el.tagName.toLowerCase().includes('turnstile')) {
+                        const iframe = el.querySelector('iframe');
+                        if (iframe) return iframe.src || 'found';
+                    }
+                    if (el.shadowRoot) {
+                        const result = deepSearch(el.shadowRoot, depth + 1);
+                        if (result) return result;
+                        const iframe = el.shadowRoot.querySelector('iframe[src*="challenges.cloudflare"]') || el.shadowRoot.querySelector('iframe[src*="cdn-cgi"]');
+                        if (iframe) return iframe.src;
+                    }
+                }
+                return null;
+            }
+            return deepSearch(document, 0) || 'not-found';
+        """)
+        if js_deep and 'not-found' not in js_deep:
+            print(json.dumps({"step": f"Deep JS search found: {js_deep}"}), flush=True)
+            # Now get the element by querying DrissionPage
+            iframe = page.ele('tag:iframe@src*=challenges.cloudflare.com', timeout=1) or page.ele('tag:iframe@src*=/cdn-cgi/challenge-platform/', timeout=1)
+            if iframe:
+                return iframe
     except:
         pass
 
