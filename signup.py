@@ -227,6 +227,19 @@ def find_turnstile_iframe(page):
     except:
         pass
 
+    # Method 5: If only 1 iframe on page and Turnstile is visible, use it
+    try:
+        all_iframes = page.eles('tag:iframe')
+        if all_iframes and len(all_iframes) == 1:
+            print(json.dumps({"step": f"Satu iframe ditemukan di page, langsung pakai: src={all_iframes[0].attr('src') or 'empty'}"}), flush=True)
+            return all_iframes[0]
+        elif all_iframes:
+            # Print all iframe srcs for debugging
+            srcs = [f"iframe{i}={ifr.attr('src') or 'empty'}" for i, ifr in enumerate(all_iframes)]
+            print(json.dumps({"step": f"Ditemukan {len(all_iframes)} iframe: {', '.join(srcs)}"}), flush=True)
+    except:
+        pass
+
     return None
 
 def solve_turnstile_drission(page, timeout=45):
