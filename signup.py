@@ -254,80 +254,54 @@ def find_turnstile_iframe(page):
 
     return None
 
-def solve_turnstile_drission(page, timeout=45):
-    """Bypasses Cloudflare Turnstile using DrissionPage's iframe navigation"""
-    print(json.dumps({"step": "Mencari Turnstile checkbox..."}), flush=True)
+def solve_turnstile_drission(page, timeout=60):
+    """Solves Turnstile — finds iframe via shadow DOM, tries click, falls back to waiting for auto-solve"""
+    print(json.dumps({"step": "Mencari Turnstile iframe..."}), flush=True)
     
-    # Debug: print all iframes on the page
-    try:
-        iframes = page.eles('tag:iframe')
-        print(json.dumps({"step": f"Ditemukan {len(iframes)} standard iframe di halaman"}), flush=True)
-    except Exception as e:
-        print(json.dumps({"step": f"Gagal list debug iframes: {str(e)}"}), flush=True)
-
     deadline = time.time() + timeout
+    found_frame = False
+    
     while time.time() < deadline:
         try:
-            # 1. Find the iframe element
+            # 1. Find the Turnstile iframe
             iframe_ele = find_turnstile_iframe(page)
             if iframe_ele:
-                # 2. Get the ChromiumFrame object using get_frame()
                 frame = page.get_frame(iframe_ele)
                 if frame:
-                    print(json.dumps({"step": "Iframe Turnstile terhubung! Mencari checkbox..."}), flush=True)
-                    # Check for the checkbox inside the frame
-                    checkbox = (
-                        frame.ele('.mark', timeout=2) or 
-                        frame.ele('.cb-i', timeout=1) or 
-                        frame.ele('@type=checkbox', timeout=1) or 
-                        frame.ele('#cf-stage', timeout=1) or 
-                        frame.ele('#challenge-stage', timeout=1)
-                    )
-                    if checkbox:
-                        print(json.dumps({"step": "Checkbox Turnstile ditemukan! Mengklik..."}), flush=True)
-                        checkbox.click()
-                        time.sleep(3)
-                        # Verify if solved (check if token is generated)
-                        token = page.ele('@name=cf-turnstile-response', timeout=2) or page.ele('@name=cf_challenge_response', timeout=2)
-                        if token and token.value:
-                            print(json.dumps({"step": "Turnstile berhasil di-solve!"}), flush=True)
-                            return True
-                    else:
-                        # Debug: print frame HTML to see what's inside
+                    found_frame = True
+                    print(json.dumps({"step": "Turnstile iframe terhubung!"}), flush=True)
+                    
+                    # Try to find and click checkbox (various selectors)
+                    checkbox = None
+                    for sel in ['tag:div@class=mark', '.cb-i', '@type=checkbox', '#cf-stage', '#challenge-stage', 'tag:div@role=checkbox', '.ctp-checkbox-container']:
                         try:
-                            frame_html = frame.html
-                            print(json.dumps({"step": f"Frame HTML (first 500): {frame_html[:500]}"}), flush=True)
+                            checkbox = frame.ele(sel, timeout=1)
+                            if checkbox:
+                                break
                         except:
                             pass
-                        
-                        # Click via JS injection (bypasses ChromiumFrame lack of .click())
-                        print(json.dumps({"step": "Mengklik iframe via JS..."}), flush=True)
-                        try:
-                            page.run_js('document.querySelector("iframe").click()')
-                        except:
-                            # Fallback: click at iframe coordinates via CDP
-                            try:
-                                rect = iframe_ele.rect
-                                if rect:
-                                    cx = rect['x'] + rect['width'] / 2
-                                    cy = rect['y'] + rect['height'] / 2
-                                    page.run_js(f'var el = document.elementFromPoint({cx}, {cy}); if(el) el.click();')
-                            except:
-                                pass
-                        time.sleep(3)
-                        
-                        token = page.ele('@name=cf-turnstile-response', timeout=2) or page.ele('@name=cf_challenge_response', timeout=2)
-                        if token and token.value:
-                            print(json.dumps({"step": "Turnstile berhasil di-solve via iframe click!"}), flush=True)
-                            return True
-                else:
-                    print(json.dumps({"step": "Gagal mendapatkan ChromiumFrame dari iframe element..."}), flush=True)
-            else:
-                print(json.dumps({"step": "Iframe Turnstile belum muncul..."}), flush=True)
+                    
+                    if checkbox:
+                        print(json.dumps({"step": f"Checkbox ditemukan ({checkbox.tag})! Mengklik..."}), flush=True)
+                        checkbox.click()
+                    else:
+                        # No checkbox — Turnstile may auto-solve (flexible mode)
+                        print(json.dumps({"step": "Checkbox tidak ada, tunggu auto-solve (flexible mode)..."}), flush=True)
         except Exception as e:
-            print(json.dumps({"step": f"Error di Turnstile loop: {str(e)}"}), flush=True)
-        time.sleep(2)
-    print(json.dumps({"step": "Turnstile checkbox tidak ditemukan atau gagal diklik"}), flush=True)
+            print(json.dumps({"step": f"Error Turnstile loop: {str(e)}"}), flush=True)
+        
+        # Check if token appeared on parent page
+        try:
+            token_el = page.ele('@name=cf-turnstile-response', timeout=2) or page.ele('@name=cf_challenge_response', timeout=2)
+            if token_el and token_el.value:
+                print(json.dumps({"step": "Turnstile BERHASIL di-solve! Token ditemukan."}), flush=True)
+                return True
+        except:
+            pass
+        
+        time.sleep(3)
+    
+    print(json.dumps({"step": f"Turnstile timeout ({timeout}s), frame_found={found_frame}"}), flush=True)
     return False
 
 # ── Main Flow ────────────────────────────────────────────────────────────────
