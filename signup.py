@@ -281,9 +281,27 @@ def solve_turnstile_drission(page, timeout=45):
                             print(json.dumps({"step": "Turnstile berhasil di-solve!"}), flush=True)
                             return True
                     else:
-                        # Try clicking the center of the iframe element itself (ChromiumElement)
-                        print(json.dumps({"step": "Checkbox tidak langsung terlihat, mengklik center iframe_ele..."}), flush=True)
-                        iframe_ele.click()
+                        # Debug: print frame HTML to see what's inside
+                        try:
+                            frame_html = frame.html
+                            print(json.dumps({"step": f"Frame HTML (first 500): {frame_html[:500]}"}), flush=True)
+                        except:
+                            pass
+                        
+                        # Click via JS injection (bypasses ChromiumFrame lack of .click())
+                        print(json.dumps({"step": "Mengklik iframe via JS..."}), flush=True)
+                        try:
+                            page.run_js('document.querySelector("iframe").click()')
+                        except:
+                            # Fallback: click at iframe coordinates via CDP
+                            try:
+                                rect = iframe_ele.rect
+                                if rect:
+                                    cx = rect['x'] + rect['width'] / 2
+                                    cy = rect['y'] + rect['height'] / 2
+                                    page.run_js(f'var el = document.elementFromPoint({cx}, {cy}); if(el) el.click();')
+                            except:
+                                pass
                         time.sleep(3)
                         
                         token = page.ele('@name=cf-turnstile-response', timeout=2) or page.ele('@name=cf_challenge_response', timeout=2)
