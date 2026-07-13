@@ -138,31 +138,69 @@ def wait_for_cloudflare_challenge(page, timeout=90):
     return False
 
 def find_turnstile_iframe(page):
-    """Finds Turnstile iframe — fast method using JS to search shadow DOM"""
-    # Method 1: JS-based shadow DOM search (fastest — single call)
+    """Finds Turnstile iframe — uses CDP DOM.getDocument(pierce=true) to traverse shadow DOMs"""
+    
+    # Method 1: CDP DOM.getDocument with pierce=true (opens all shadow roots)
     try:
-        js_result = page.run_js("""
-            // Find all iframes inside shadow roots
-            function findShadowIframes(root) {
-                let results = [];
-                const allEls = root.querySelectorAll('*');
-                for (const el of allEls) {
-                    if (el.shadowRoot) {
-                        const iframes = el.shadowRoot.querySelectorAll('iframe');
-                        for (const iframe of iframes) {
-                            results.push(iframe.src || iframe.getAttribute('src') || 'no-src');
-                        }
-                        results = results.concat(findShadowIframes(el.shadowRoot));
-                    }
-                }
-                return results;
-            }
-            return JSON.stringify(findShadowIframes(document));
-        """)
-        if js_result and js_result.strip(' "[]') and js_result.strip(' "[]') != 'no-src':
-            print(json.dumps({"step": f"Shadow DOM iframes via JS: {js_result}"}), flush=True)
+        doc = page.run_cdp('DOM.getDocument', depth=-1, pierce=True)
+        if doc and 'root' in doc:
+            def find_iframes_cdp(node, depth=0):
+                if depth > 20:
+                    return None
+                name = node.get('nodeName', '').lower()
+                if name == 'iframe':
+                    # Check attributes for Turnstile indicators
+                    attrs = node.get('attributes', [])
+                    attr_dict = {}
+                    for i in range(0, len(attrs), 2):
+                        if i + 1 < len(attrs):
+                            attr_dict[attrs[i]] = attrs[i + 1]
+                    src = attr_dict.get('src', '')
+                    title = attr_dict.get('title', '')
+                    cls = attr_dict.get('class', '')
+                    
+                    # Skip OneTrust iframes
+                    if 'onetrust' in cls.lower() or 'onetrust' in title.lower():
+                        pass
+                    elif 'challenges.cloudflare' in src or 'cdn-cgi' in src or 'turnstile' in src.lower():
+                        print(json.dumps({"step": f"CDP: Turnstile iframe found! src={src[:80]}"}), flush=True)
+                        # Return the node ID to get the element later
+                        return node.get('nodeId')
+                    elif src == '' or src == 'about:blank':
+                        # Could be a dynamically created Turnstile iframe
+                        # Check if it's inside a Turnstile container
+                        print(json.dumps({"step": f"CDP: iframe with empty src, nodeId={node.get('nodeId')}, attrs={attr_dict}"}), flush=True)
+                
+                for child in node.get('children', []):
+                    result = find_iframes_cdp(child, depth + 1)
+                    if result:
+                        return result
+                # Also check shadow roots
+                if 'shadowRoots' in node:
+                    for sr in node['shadowRoots']:
+                        result = find_iframes_cdp(sr, depth + 1)
+                        if result:
+                            return result
+                return None
+            
+            node_id = find_iframes_cdp(doc['root'])
+            if node_id:
+                # Resolve the nodeId to a DrissionPage element
+                try:
+                    iframe = page.ele(f'xpath://iframe[@node-id="{node_id}"]', timeout=1)
+                    if iframe:
+                        return iframe
+                except:
+                    pass
+                # Fallback: try to get element by nodeId directly
+                try:
+                    result = page.run_cdp('DOM.resolveNode', nodeId=node_id)
+                    if result and 'object' in result:
+                        print(json.dumps({"step": f"CDP: Resolved nodeId {node_id} to object"}), flush=True)
+                except:
+                    pass
     except Exception as e:
-        pass
+        print(json.dumps({"step": f"CDP DOM search error: {str(e)}"}), flush=True)
 
     # Method 2: Check known wrappers (fast — specific selectors)
     for wrapper_selector in ['cf-turnstile-wrapper', '.cf-turnstile', '.cf-challenge', '#turnstile-wrapper', '[data-sitekey]']:
@@ -186,7 +224,7 @@ def find_turnstile_iframe(page):
         except:
             pass
 
-    # Method 3: Standard iframe lookup (fallback)
+    # Method 3: Standard iframe lookup with Turnstile-related src
     try:
         iframe = page.ele('tag:iframe@src*=challenges.cloudflare.com', timeout=1) or page.ele('tag:iframe@src*=/cdn-cgi/challenge-platform/', timeout=1)
         if iframe:
@@ -195,48 +233,22 @@ def find_turnstile_iframe(page):
     except:
         pass
 
-    # Method 4: CDP-based shadow DOM deep search (nuclear option)
+    # Method 4: Check all div elements' shadow roots (targeted, not ALL elements)
     try:
-        js_deep = page.run_js("""
-            function deepSearch(root, depth) {
-                if (depth > 10) return null;
-                const els = root.querySelectorAll('*');
-                for (const el of els) {
-                    // Check if element is a Turnstile container
-                    if (el.tagName && el.tagName.toLowerCase().includes('turnstile')) {
-                        const iframe = el.querySelector('iframe');
-                        if (iframe) return iframe.src || 'found';
-                    }
-                    if (el.shadowRoot) {
-                        const result = deepSearch(el.shadowRoot, depth + 1);
-                        if (result) return result;
-                        const iframe = el.shadowRoot.querySelector('iframe[src*="challenges.cloudflare"]') || el.shadowRoot.querySelector('iframe[src*="cdn-cgi"]');
-                        if (iframe) return iframe.src;
-                    }
-                }
-                return null;
-            }
-            return deepSearch(document, 0) || 'not-found';
-        """)
-        if js_deep and 'not-found' not in js_deep:
-            print(json.dumps({"step": f"Deep JS search found: {js_deep}"}), flush=True)
-            # Now get the element by querying DrissionPage
-            iframe = page.ele('tag:iframe@src*=challenges.cloudflare.com', timeout=1) or page.ele('tag:iframe@src*=/cdn-cgi/challenge-platform/', timeout=1)
-            if iframe:
-                return iframe
-    except:
-        pass
-
-    # Method 5: If only 1 iframe on page and Turnstile is visible, use it
-    try:
-        all_iframes = page.eles('tag:iframe')
-        if all_iframes and len(all_iframes) == 1:
-            print(json.dumps({"step": f"Satu iframe ditemukan di page, langsung pakai: src={all_iframes[0].attr('src') or 'empty'}"}), flush=True)
-            return all_iframes[0]
-        elif all_iframes:
-            # Print all iframe srcs for debugging
-            srcs = [f"iframe{i}={ifr.attr('src') or 'empty'}" for i, ifr in enumerate(all_iframes)]
-            print(json.dumps({"step": f"Ditemukan {len(all_iframes)} iframe: {', '.join(srcs)}"}), flush=True)
+        for div in page.eles('tag:div', timeout=2):
+            try:
+                sr = div.shadow_root
+                if sr:
+                    iframe = sr.ele('tag:iframe', timeout=1)
+                    if iframe:
+                        # Verify it's not OneTrust
+                        src = iframe.attr('src') or ''
+                        cls = iframe.attr('class') or ''
+                        if 'onetrust' not in cls.lower() and 'onetrust' not in src.lower():
+                            print(json.dumps({"step": f"Turnstile iframe di shadow_root dari div (class={div.attr('class') or ''})"}), flush=True)
+                            return iframe
+            except:
+                pass
     except:
         pass
 
