@@ -198,7 +198,13 @@ def solve_turnstile_drission(page, timeout=45):
                 if frame:
                     print(json.dumps({"step": "Iframe Turnstile terhubung! Mencari checkbox..."}), flush=True)
                     # Check for the checkbox inside the frame
-                    checkbox = frame.ele('.mark', timeout=2) or frame.ele('.cb-i', timeout=1) or frame.ele('@type=checkbox', timeout=1) or frame.ele('#cf-stage', timeout=1)
+                    checkbox = (
+                        frame.ele('.mark', timeout=2) or 
+                        frame.ele('.cb-i', timeout=1) or 
+                        frame.ele('@type=checkbox', timeout=1) or 
+                        frame.ele('#cf-stage', timeout=1) or 
+                        frame.ele('#challenge-stage', timeout=1)
+                    )
                     if checkbox:
                         print(json.dumps({"step": "Checkbox Turnstile ditemukan! Mengklik..."}), flush=True)
                         checkbox.click()
@@ -209,12 +215,12 @@ def solve_turnstile_drission(page, timeout=45):
                             print(json.dumps({"step": "Turnstile berhasil di-solve!"}), flush=True)
                             return True
                     else:
-                        # Try clicking the center of the frame
-                        print(json.dumps({"step": "Checkbox tidak langsung terlihat, mengklik center iframe..."}), flush=True)
-                        frame.click()
+                        # Try clicking the center of the iframe element itself (ChromiumElement)
+                        print(json.dumps({"step": "Checkbox tidak langsung terlihat, mengklik center iframe_ele..."}), flush=True)
+                        iframe_ele.click()
                         time.sleep(3)
                         
-                        token = page.ele('@name=cf-turnstile-response', timeout=2)
+                        token = page.ele('@name=cf-turnstile-response', timeout=2) or page.ele('@name=cf_challenge_response', timeout=2)
                         if token and token.value:
                             print(json.dumps({"step": "Turnstile berhasil di-solve via iframe click!"}), flush=True)
                             return True
